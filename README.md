@@ -1,89 +1,246 @@
-# Building a custom React renderer
-[![Build Status](https://travis-ci.org/nitin42/Making-a-custom-React-renderer.svg?branch=master)](https://travis-ci.org/nitin42/Making-a-custom-React-renderer)
+# Создание кастомного рендерера для React 16
 
-> Let's make a custom React renderer 😎
+## Введение
 
-<p align="center">
-  <img src="https://cdn.filestackcontent.com/5KdzhvGRG61WMQhBa1Ql" width="630" height="350">
-</p>
+Данная статья является вольным переводом урока от nitin42, ссылка на оригинал [https://github.com/nitin42/Making-a-custom-React-renderer](https://github.com/nitin42/Making-a-custom-React-renderer)
 
-## Introduction
+Данная статья состоит из пяти частей. Первая часть даёт представление о том, что такое рендереры и с чем их едят. А оставшиеся четыре - о этапах создания самописного рендерера.
 
-This is a small tutorial on how to build your custom React renderer and render the components to the host environment you need. The tutorial is divided into four parts - 
+## Что такое рендерер
 
-* **Part 1** - Creating a React reconciler (current targeted version React 16.0.0-alpha.4).
+React, которым мы все пользуемся для разработки сайтов состаит из двух основных библиотек - React и ReactDOM. Создавать различные компоненты нам помогает React, а вот ReactDOM занимается превращением их в HTML для отображения в браузере.
 
-* **Part 2** - Creating a public interface to the reconciler i.e "Renderer".
+Вот этот самый ReactDOM и является тем самым рендерером. Другими словами, рендерер это библиотека которая позволяет визуализировать наш набор компонентов с данными внутри них. 
 
-* **Part 3** - Parsing the input component (call the render() method on our main document).
+Кроме ReactDOM, отвественного за создание веб-страниц, существует большое количество рендереров для совершенно разных платформ. Самым известным примером является React-Native, для создание приложений на Android и iOS с помощью React. 
 
-* **Part 4** - Creating a render method to flush everything to the host environment we need.
+Основная цель создания кастомных рендереров - распространение идеалогии React - "Выучил один раз - пиши везде". Так уже сейчас на React можно создавать приложения для мобильных платформ, VR, AR, IoT и другие направления.  
 
-## Brief
+Для рендереров даже есть свой [awesome-репозиторий](https://github.com/chentsulin/awesome-react-renderer), где вы можете найти несколько примером рендереров.
 
-### [Part-I](./part-one.md)
+До недавнего времени создание своих рендереров было затруднено текущим состоянием библиотеки React, которая была не так радушна для создателей своих рендереров. Но с приходом Fiber ситуация сильно изменилась. API значительно упростилось и теперь все карты в руках разработчиков.
 
-In part one, we will create a React reconciler for the current targeted version of React 16.0.0-alpha.4. We will implement the renderer using Fiber as it has a first-class renderer API for creating custom renderer.
+И в этой статье будет изложен пример создания своего рендерера, который будет из имеющихся компонентов React генерировать Word-документ. За основу будет взята библиотека [officegen](https://github.com/Ziv-Barber/officegen), которая позволяет генерировать Open Office XML файлы, другими словами файлы формата docx.
 
-### [Part-II](./part-two.md)
+# Part-I
 
-In part two, we will create a public interface to the reconciler i.e a renderer. We will create a custom method for `createElement` and will also architect the component API for our example. 
+This is part one of the tutorial. In this section, we will create a React reconciler for the current targeted version of 
+`React 16.0.0-alpha.4`. We are going to implement the renderer using Fiber. Earlier, React was using a **stack renderer** as it was implemented on the traditional JavaScript stack. On the other hand, Fiber is influenced by algebraic effects and functional ideas. It can be thought of as a JavaScript object that contains information about a component, its input, and its output.
 
-### [Part-III](./part-three.md)
+Before we proceed further, I'll recommend you to read [this](https://github.com/acdlite/react-fiber-architecture) documentation on Fiber architecture by [Andrew Clark](https://twitter.com/acdlite?lang=en). This will make things
+easier for you.
 
-In part three, we will build a function that will parse the input component and will return the output (rendered children and props).
+Let's get started!
 
-### [Part-IV](./part-four.md)
+We will first install the dependencies.
 
-In part four, we will create a render method which will render our input component.
+```
+npm install react-dom@16.0.0-alpha.4 fbjs@0.8.4
+```
 
-
-## What we will build?
-
-We will create a custom renderer that will render a React component to a word document. I've already made one. Full source code and the documentation for that is available [here](https://github.com/nitin42/redocx).
-
-We will use [officegen](https://github.com/Ziv-Barber/officegen) for this. I'll explain some of it's basic concepts here.
-
-Officegen can generate Open Office XML files for Microsoft Office 2007 and later. It generates a output stream and not a file.
-It is independent of any output tool.
-
-**Creating a document object**
+Let's import `ReactFiberReconciler` from `react-dom` and other modules also.
 
 ```js
-let doc = officegen('docx', { __someOptions__ });
+import ReactFiberReconciler from 'react-dom/lib/ReactFiberReconciler';
+import emptyObject from 'fbjs/lib/emptyObject';
+import createElement from './utils/createElement';
 ```
 
-**Generating output stream**
+Notice we have also imported `createElement` function. Don't worry, we will implement it afterwards.
+
+We will create a reconciler instance using `ReactFiberReconciler` which accepts a **host config** object. In this object we will define
+some methods which can be thought of as lifecycle of a renderer (update, append children, remove children, commit). React will manage
+all the non-host components, stateless and composites.
 
 ```js
-let output = fs.createWriteStream (__filePath__);
+const WordRenderer = ReactFiberReconciler({
 
-doc.generate(output);
+  // Creates component instance
+  createInstance(
+    type,
+    props,
+    rootContainerInstance,
+    hostContext,
+    internalInstanceHandle,
+  ) {
+    return createElement(type, props, rootContainerInstance);
+  },
+  
+  appendInitialChild(parentInstance, child) {
+    if (parentInstance.appendChild) {
+      parentInstance.appendChild(child);
+    } else {
+      parentInstance.document = child;
+    }
+  },
+
+  appendChild(parentInstance, child) {
+    if (parentInstance.appendChild) {
+      parentInstance.appendChild(child);
+    } else {
+      parentInstance.document = child;
+    }
+  },
+
+  removeChild(parentInstance, child) {
+    parentInstance.removeChild(child);
+  },
+
+  insertBefore(parentInstance, child, beforeChild) {
+    // noop
+  },
+
+  // This is the final method which is called before flushing the root component to the host environment.
+  finalizeInitialChildren(testElement, type, props, rootContainerInstance) {
+    return false;
+  },
+
+  prepareUpdate(testElement, type, oldProps, newProps, hostContext) {
+    return true;
+  },
+
+  commitUpdate(
+    instance,
+    type,
+    oldProps,
+    newProps,
+    rootContainerInstance,
+    internalInstanceHandle,
+  ) {
+    // noop
+  },
+  
+  // This is called after initializeFinalChildren
+  commitMount(
+    instance,
+    type,
+    newProps,
+    rootContainerInstance,
+    internalInstanceHandle,
+  ) {
+    // noop
+  },
+
+  getRootHostContext() {
+    return emptyObject;
+  },
+
+  getChildHostContext() {
+    return emptyObject;
+  },
+  
+  getPublicInstance(inst) {
+    return inst;
+  },
+
+  // These are necessary for any global side-effects that you need to produce in the host environment
+  
+  prepareForCommit() {
+    // noop
+  },
+
+  resetAfterCommit() {
+    // noop
+  },
+  
+  // The following methods are for the specific text nodes. In our example, we don't have any specific text nodes so we return false or noop them
+  
+  shouldSetTextContent(props) {
+    return false;
+  },
+
+  resetTextContent(testElement) {
+    // noop
+  },
+
+  createTextInstance(
+    text,
+    rootContainerInstance,
+    hostContext,
+    internalInstanceHandle,
+  ) {
+    return text;
+  },
+
+  commitTextUpdate(textInstance, oldText, newText) {
+    textInstance.chidren = newText;
+  },
+  
+  useSyncScheduling: true,
+});
 ```
 
-**Events**
+Let's break down our host config -
 
-`finalize` - It is fired after a stream has been generated successfully.
+**`createInstance`**
 
-`error` - Fired when there are any errors
+This method creates a component instance with `type`, `props`, `rootContainerInstance`, `hostContext` and `internalInstanceHandle`.
 
-## Running the project
+Example - Let's say we render,
 
+```js
+<Text>Hello World</Text>
+```  
+
+`createInstance` will then return the information about the `type` of an element (' TEXT '), props ( { children: 'Hello World' } ), rootContainerInstance(`WordDocument`),
+hostContext (`{}`) and internalInstanceHandle. 
+
+`internalInstanceHandle` contains information about the `tag`, `type`, `key`, `stateNode`, and the return fiber. This object (fiber) further contains information about -
+
+* `tag`
+* `key`
+* `type`
+* `stateNode`
+* `return`
+* `child`
+* `sibling`
+* `index`
+* `ref`
+* `pendingProps`
+* `memoizedProps`
+* `updateQueue`
+* `memoizedState`
+* `effectTag`
+* `nextEffect`
+* `firstEffect`
+* `pendingWorkPriority`
+* `progressedPriority`
+* `progressedChild`
+* `progressedFirstDeletion`
+* `progressedLastDeletion`
+* `alternate`
+
+**`appendInitialChild`**
+
+It appends the children. If children are wrapped inside a parent component (eg: `Document`), then we will add all the children to it else we 
+will create a property called `document` on a parent node and append all the children to it. This will be helpful when we will parse the input component
+and make a call to the render method of our component.
+
+Example - 
+
+```js
+const data = document.render(); // returns the output
 ```
-git clone https://github.com/nitin42/Making-a-custom-React-renderer
-cd Making-a-custom-React-renderer
-yarn install
-yarn example
-```
 
-After you run `yarn example`, a docx file will be generated in the [demo](./demo) folder.
+**`prepareUpdate`**
 
-## Contributing
+It computes the diff for an instance. Fiber can reuse this work even if it pauses or abort rendering a part of the tree.
 
-Suggestions to improve the tutorial are welcome 😃.
+**`commitUpdate`**
 
-**If you've completed the tutorial successfully, you can either watch/star this repo or follow me on [twitter](https://twitter.com/NTulswani) for more updates.**
+Commit the update or apply the diff calculated to the host environment's node (WordDocument).
 
-<a target='_blank' rel='nofollow' href='https://app.codesponsor.io/link/FCRW65HPiwhNtebDx2tTc53E/nitin42/Making-a-custom-React-renderer'>
-  <img alt='Sponsor' width='888' height='68' src='https://app.codesponsor.io/embed/FCRW65HPiwhNtebDx2tTc53E/nitin42/Making-a-custom-React-renderer.svg' />
-</a>
+**`hostContext`**
+
+Host context is an internal object which our renderer may use based on the current location in the tree. In DOM, this object 
+is required to make correct calls for example to create an element in html or in MathMl based on current context.
+
+**`getPublicInstance`**
+
+This is an identity relation which means that it always returns the same value that was used as its argument. It was added for the TestRenderers.
+
+We're done with the Part One of our tutorial. I know some concepts are difficult to grok solely by looking at code. Initially it feels agitating but keep trying it and it will eventually make sense. When I first started learning about the Fiber architecture, I couldn't understand anything at all. I was frustated and dismayed but I used `console.log()` in every section of the above code and tried to understand its implementation and then there was this "Aha Aha" moment and it finally helped me to build [redocx](https://github.com/nitin42/redocx). Its a little perplexing to understand but you will get it eventually.
+
+If you still have any doubts, DMs are open. I'm at [@NTulswani](https://twitter.com/NTulswani) on Twitter.
+
+[Continue to Part-II](./part-two.md)
