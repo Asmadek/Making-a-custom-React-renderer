@@ -6,7 +6,7 @@ class App extends Component {
   render () {
     return (
       <Document>
-        <Text>Congrats! You've successfully completed the tutorial. I'm excited to see what you build</Text>
+        <Text>Congrats! You've successfully completed the tutorial. I'm excited to see what you build \n Check your folder for "text.docx" document </Text>
       </Document>
     );
   }
